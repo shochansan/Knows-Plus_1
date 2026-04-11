@@ -25,7 +25,7 @@ except Exception:
 # Unified Config
 # =========================================================
 APP_TITLE = "GPS統合分析アプリ"
-APP_VERSION = "2026-04-10_unified_tabs_v1"
+APP_VERSION = "2026-04-11_unified_tabs_v2_points_labels"
 POSITION_ORDER = ["GK", "CB", "SB", "MF", "SH", "FW"]
 STREAMLIT_FILE_TYPES = ["csv", "xlsx", "xls", "numbers"]
 ALLOWED_EXTENSIONS = {".csv", ".xlsx", ".xls", ".numbers"}
@@ -83,6 +83,32 @@ LAMBDA_OPTIONS = {
     "弱め (λ=0.1)": 0.1,
     "標準 (λ=0.2)": 0.2,
     "強め (λ=0.3)": 0.3,
+}
+
+POINT_ALPHA = 0.25
+LABEL_ALPHA = 0.55
+POINT_SIZE = 22
+LABEL_FONTSIZE = 7
+MEDIAN_FONTSIZE = 8
+JITTER_WIDTH = 0.16
+SHOW_VALUE_IN_LABEL = False
+WEEKLY_POINT_ALPHA = 0.28
+WEEKLY_LABEL_ALPHA = 0.18
+WEEKLY_POINT_SIZE = 18
+WEEKLY_LABEL_FONTSIZE = 7
+
+WEEKLY_METRIC_COLORS = {
+    "Distance_vsGame_pct": "#66bb6a",
+    "HI_D_vsGame_pct": "#9ccc65",
+    "SI_D_vsGame_pct": "#4dd0e1",
+    "Accel >2m/s/s(n)_vsGame_pct": "#ffffff",
+    "Decel>2m/s/s(n)_vsGame_pct": "#ffffff",
+    "HighAgility_vsGame_pct": "#ffee58",
+    "SPD_MX_vsGame_pct": "#ffffff",
+    "dis(m)/min_vsGame_pct_All": "#ef5350",
+    "dis(m)/min_vsGame_pct_MX": "#f8bbd0",
+    "High Agility/min(n/min)_vsGame_pct_All": "#ef5350",
+    "High Agility/min(n/min)_vsGame_pct_MX": "#f8bbd0",
 }
 
 
@@ -633,26 +659,79 @@ def plot_ratio_boxplot(df: pd.DataFrame, metric: str, session_order: List[str], 
     fig, ax = plt.subplots(figsize=(11.69, 8.27))
     data = []
     labels = []
+    per_session_rows = []
+
+    work = df.copy()
+    if "Name" not in work.columns:
+        work["Name"] = ""
+
     for sess in session_order:
-        vals = to_num(df.loc[df["Session"] == sess, metric]).dropna().values
-        if len(vals) == 0:
+        sub = work.loc[work["Session"] == sess].copy()
+        vals = to_num(sub[metric])
+        arr = vals.dropna().values
+        if len(arr) == 0:
             continue
-        data.append(vals)
+        data.append(arr)
         labels.append(sess)
+        valid = sub.loc[vals.notna(), ["Name", metric]].copy()
+        per_session_rows.append(valid)
+
     if not data:
         ax.text(0.5, 0.5, "データがありません", ha="center", va="center", transform=ax.transAxes)
         ax.axis("off")
         return fig
-    bp = ax.boxplot(data, labels=labels, patch_artist=True, showfliers=False)
+
+    bp = ax.boxplot(
+        data,
+        labels=labels,
+        patch_artist=True,
+        showfliers=False,
+        widths=0.55,
+        boxprops=dict(linewidth=2.2, edgecolor="black"),
+        whiskerprops=dict(linewidth=2.0, color="black"),
+        capprops=dict(linewidth=2.0, color="black"),
+        medianprops=dict(linewidth=2.6, color="black"),
+    )
     for b in bp["boxes"]:
-        b.set_alpha(0.35)
+        b.set_facecolor("white")
+        b.set_alpha(1.0)
+
+    rng = np.random.default_rng(0)
+    for i, valid in enumerate(per_session_rows, start=1):
+        yvals = pd.to_numeric(valid[metric], errors="coerce")
+        names = valid["Name"].fillna("").astype(str).tolist()
+        for yv, nm in zip(yvals, names):
+            if pd.isna(yv):
+                continue
+            xj = i + rng.uniform(-JITTER_WIDTH, JITTER_WIDTH)
+            ax.scatter([xj], [yv], alpha=POINT_ALPHA, s=POINT_SIZE)
+            label_text = nm
+            if SHOW_VALUE_IN_LABEL:
+                label_text = f"{nm} ({yv:.0f})"
+            ax.text(
+                xj + 0.02, yv, label_text,
+                fontsize=LABEL_FONTSIZE,
+                alpha=LABEL_ALPHA,
+                va="center"
+            )
+
+        med = pd.to_numeric(valid[metric], errors="coerce").dropna().median()
+        if pd.notna(med):
+            ax.text(
+                i, med, f"{med:.1f}",
+                fontsize=MEDIAN_FONTSIZE,
+                ha="center", va="bottom"
+            )
+
     ymin, ymax = nice_ylim(np.concatenate(data) if data else [])
     ax.set_ylim(ymin, ymax)
+    ax.set_xticks(range(1, len(labels) + 1))
+    ax.set_xticklabels(labels, rotation=30, ha="right")
+    ax.tick_params(axis="x", labelsize=10, pad=6)
+    ax.set_ylabel("% of Game Avg")
     ax.set_title(title)
-    ax.set_ylabel("% of Game Average")
     ax.grid(axis="y", alpha=0.3)
-    plt.xticks(rotation=45, ha="right")
-    fig.tight_layout()
+    fig.subplots_adjust(left=0.05, right=0.985, top=0.93, bottom=0.18)
     return fig
 
 
@@ -1080,27 +1159,98 @@ def plot_weekly_metric_page(df: pd.DataFrame, metric: str, weekdays: List[str], 
 
     data, labels = [], []
     stat_rows = []
+    per_day_names = []
+    work = df.copy()
+    if "player_name" not in work.columns:
+        if "Name" in work.columns:
+            work["player_name"] = work["Name"].fillna("").astype(str)
+        else:
+            work["player_name"] = ""
+
     for wd in weekdays:
-        vals = to_num(df.loc[df["weekday"] == wd, metric]).dropna()
-        if len(vals):
-            data.append(vals.values)
+        sub = work.loc[work["weekday"] == wd].copy()
+        vals = to_num(sub[metric])
+        arr = vals.dropna()
+        if len(arr):
+            data.append(arr.values)
             labels.append(wd)
+        valid = sub.loc[vals.notna(), ["player_name", metric]].copy()
+        per_day_names.append(valid)
         stat_rows.append([
             wd,
-            int(vals.count()),
-            round(float(vals.mean()), 1) if len(vals) else np.nan,
-            round(float(vals.median()), 1) if len(vals) else np.nan,
-            round(float(vals.min()), 1) if len(vals) else np.nan,
-            round(float(vals.max()), 1) if len(vals) else np.nan,
+            int(arr.count()),
+            round(float(arr.mean()), 1) if len(arr) else np.nan,
+            round(float(arr.median()), 1) if len(arr) else np.nan,
+            round(float(arr.min()), 1) if len(arr) else np.nan,
+            round(float(arr.max()), 1) if len(arr) else np.nan,
         ])
+
     if data:
-        ax.boxplot(data, labels=labels, patch_artist=True, showfliers=False)
+        try:
+            box = ax.boxplot(
+                data,
+                tick_labels=labels,
+                patch_artist=True,
+                widths=0.55,
+                showfliers=False,
+                medianprops=dict(color="black", linewidth=1.8),
+                whiskerprops=dict(color="black", linewidth=1.2),
+                capprops=dict(color="black", linewidth=1.2),
+                boxprops=dict(color="black", linewidth=1.2),
+            )
+        except TypeError:
+            box = ax.boxplot(
+                data,
+                labels=labels,
+                patch_artist=True,
+                widths=0.55,
+                showfliers=False,
+                medianprops=dict(color="black", linewidth=1.8),
+                whiskerprops=dict(color="black", linewidth=1.2),
+                capprops=dict(color="black", linewidth=1.2),
+                boxprops=dict(color="black", linewidth=1.2),
+            )
+        facecolor = WEEKLY_METRIC_COLORS.get(metric, "#90caf9")
+        for patch in box["boxes"]:
+            patch.set_facecolor(facecolor)
+            patch.set_edgecolor("black")
+            patch.set_alpha(0.95)
+
+        rng = np.random.default_rng(42)
+        for i, valid in enumerate(per_day_names, start=1):
+            if len(valid) == 0:
+                continue
+            y = pd.to_numeric(valid[metric], errors="coerce").values
+            y = y[~np.isnan(y)]
+            if len(y) == 0:
+                continue
+            x = rng.normal(loc=i, scale=0.04, size=len(y))
+            ax.scatter(x, y, s=WEEKLY_POINT_SIZE, alpha=WEEKLY_POINT_ALPHA)
+            valid_names = valid.loc[pd.to_numeric(valid[metric], errors="coerce").notna(), "player_name"].tolist()
+            for xx, yy, name in zip(x, y, valid_names):
+                ax.text(
+                    xx + 0.01, yy, str(name),
+                    fontsize=WEEKLY_LABEL_FONTSIZE,
+                    alpha=WEEKLY_LABEL_ALPHA,
+                    va="center"
+                )
+
+        for i, arr in enumerate(data, start=1):
+            arr = pd.Series(arr).dropna()
+            if len(arr) == 0:
+                continue
+            med = float(np.median(arr))
+            ax.text(i, med, f"{med:.1f}", ha="center", va="bottom", fontsize=9, fontweight="bold")
+
         ymin, ymax = nice_ylim(pd.concat([pd.Series(x) for x in data]))
         ax.set_ylim(ymin, ymax)
-        ax.grid(axis="y", alpha=0.3)
+        ax.grid(axis="y", linestyle="--", alpha=0.25)
     else:
         ax.text(0.5, 0.5, "データがありません", ha="center", va="center", transform=ax.transAxes)
+
     ax.set_title(title)
+    ax.set_xlabel("曜日")
+    ax.set_ylabel("vsGame_pct")
     table = ax_tbl.table(
         cellText=stat_rows,
         colLabels=["Weekday", "N", "Mean", "Median", "Min", "Max"],
@@ -1110,7 +1260,7 @@ def plot_weekly_metric_page(df: pd.DataFrame, metric: str, weekdays: List[str], 
     table.auto_set_font_size(False)
     table.set_fontsize(8)
     table.scale(1, 1.25)
-    fig.tight_layout()
+    fig.tight_layout(rect=[0.02, 0.05, 0.98, 0.98])
     return fig
 
 
